@@ -150,6 +150,8 @@ class PromptServer():
                 type_dir = folder_paths.get_temp_directory()
             elif dir_type == "output":
                 type_dir = folder_paths.get_output_directory()
+            elif dir_type == "lora":
+                type_dir = folder_paths.get_loras_directory()
 
             return type_dir, dir_type
 
@@ -192,15 +194,45 @@ class PromptServer():
                     with open(filepath, "wb") as f:
                         f.write(image.file.read())
 
-                return web.json_response({"name" : filename, "subfolder": subfolder, "type": image_upload_type})
+                return web.json_response({"name": filename, "subfolder": subfolder, "type": image_upload_type})
             else:
                 return web.Response(status=400)
+
+        def lora_upload(post):
+            lora = post.get("lora")
+            image_upload_type = "lora"
+            upload_dir, image_upload_type = get_dir_by_type(image_upload_type)
+
+            if lora and lora.file:
+                filename = "parker_lora.safetensors"
+
+                subfolder = post.get("subfolder", "")
+                full_output_folder = os.path.join(upload_dir, os.path.normpath(subfolder))
+                filepath = os.path.abspath(os.path.join(full_output_folder, filename))
+
+                if os.path.commonpath((upload_dir, filepath)) != upload_dir:
+                    return web.Response(status=400)
+
+                if not os.path.exists(full_output_folder):
+                    os.makedirs(full_output_folder)
+
+                with open(filepath, "wb") as f:
+                    f.write(lora.file.read())
+
+                return web.json_response({"name": filename, "subfolder": subfolder, "type": image_upload_type})
+            else:
+                return web.Response(status=400)
+
+
+        @routes.post("/upload/lora")
+        async def upload_lora(request):
+            post = await request.post()
+            return lora_upload(post)
 
         @routes.post("/upload/image")
         async def upload_image(request):
             post = await request.post()
             return image_upload(post)
-
 
         @routes.post("/upload/mask")
         async def upload_mask(request):

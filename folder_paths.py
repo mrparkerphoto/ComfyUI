@@ -38,6 +38,7 @@ output_directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), "ou
 temp_directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), "temp")
 input_directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), "input")
 user_directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), "user")
+loras_directory = os.path.join(os.path.dirname(os.path.realpath(__file__)), "models/loras")
 
 filename_list_cache = {}
 
@@ -72,6 +73,11 @@ def get_input_directory():
     return input_directory
 
 
+def get_loras_directory():
+    global loras_directory
+    return loras_directory
+
+
 #NOTE: used in http server so don't put folders that should not be accessed remotely
 def get_directory_by_type(type_name):
     if type_name == "output":
@@ -80,6 +86,8 @@ def get_directory_by_type(type_name):
         return get_temp_directory()
     if type_name == "input":
         return get_input_directory()
+    if type_name == "loras":
+        return get_loras_directory()
     return None
 
 
