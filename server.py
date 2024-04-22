@@ -23,7 +23,7 @@ import mimetypes
 from comfy.cli_args import args
 import comfy.utils
 import comfy.model_management
-
+import pika
 from app.user_manager import UserManager
 
 class BinaryEventTypes:
@@ -89,6 +89,11 @@ class PromptServer():
         self.client_id = None
 
         self.on_prompt_handlers = []
+
+        self.amqp_connection = pika.BlockingConnection(pika.ConnectionParameters('localhost', heartbeat=6000))
+        self.amqp_receiving_channel = self.amqp_connection.channel()
+        self.amqp_receiving_channel.queue_declare(queue='comfy_requests', durable=True)
+        self.amqp_receiving_channel.basic_qos(prefetch_count=1)
 
         @routes.get('/ws')
         async def websocket_handler(request):
@@ -526,7 +531,6 @@ class PromptServer():
                     self.prompt_queue.delete_history_item(id_to_delete)
 
             return web.Response(status=200)
-        
 
     def run_prompt(self, json_data):
         json_data = self.trigger_on_prompt(json_data)
@@ -561,6 +565,13 @@ class PromptServer():
                 return web.json_response({"error": valid[1], "node_errors": valid[3]}, status=400)
         else:
             return web.json_response({"error": "no prompt", "node_errors": []}, status=400)
+
+    def consume_amqp_prompt(self, ch, method, properties, body):
+        print("ELO")
+        print(body)
+        json_body = json.loads(body)
+        self.run_prompt(json_body)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
 
     def add_routes(self):
         self.user_manager.add_routes(self.routes)
@@ -660,6 +671,8 @@ class PromptServer():
         await runner.setup()
         site = web.TCPSite(runner, address, port)
         await site.start()
+        self.amqp_receiving_channel.basic_consume(queue='comfy_requests', auto_ack=False, on_message_callback=self.consume_amqp_prompt)
+        self.amqp_receiving_channel.start_consuming()
 
         if verbose:
             logging.info("Starting server\n")
