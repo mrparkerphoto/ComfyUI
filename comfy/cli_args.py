@@ -45,6 +45,10 @@ parser.add_argument("--input-directory", type=str, default=None, help="Set the C
 parser.add_argument("--auto-launch", action="store_true", help="Automatically launch ComfyUI in the default browser.")
 parser.add_argument("--disable-auto-launch", action="store_true", help="Disable auto launching the browser.")
 parser.add_argument("--cuda-device", type=int, default=None, metavar="DEVICE_ID", help="Set the id of the cuda device this instance will use.")
+parser.add_argument("--cloud_storage_key", type=str, help="Cloud storage creds")
+parser.add_argument("--gcp_bucket", type=str, help="GCP bucket")
+parser.add_argument("--gcp_project_id", type=str, help="GCP project id")
+
 cm_group = parser.add_mutually_exclusive_group()
 cm_group.add_argument("--cuda-malloc", action="store_true", help="Enable cudaMallocAsync (enabled by default for torch 2.0 and up).")
 cm_group.add_argument("--disable-cuda-malloc", action="store_true", help="Disable cudaMallocAsync.")
