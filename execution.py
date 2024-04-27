@@ -6,16 +6,11 @@ import heapq
 import traceback
 import inspect
 from typing import List, Literal, NamedTuple, Optional
-from google.cloud import storage
-from google.oauth2 import service_account
-import json
 
 import torch
 import nodes
 
 import comfy.model_management
-from comfy.cli_args import args
-
 
 def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
@@ -284,14 +279,6 @@ class PromptExecutor:
         self.server = server
         self.reset()
 
-    with open(args.cloud_storage_key) as key_file:
-        api_key_string = json.loads(key_file.read())
-    storage_credentials = service_account.Credentials.from_service_account_info(api_key_string)
-
-    storage_client = storage.Client(
-        args.gcp_project_id, credentials=storage_credentials
-    )
-
     def reset(self):
         self.outputs = {}
         self.object_storage = {}
@@ -299,10 +286,6 @@ class PromptExecutor:
         self.status_messages = []
         self.success = True
         self.old_prompt = {}
-
-    def prepare_regularisation_dataset(self, data):
-        bucket = args.gcp_bucket
-        bucket_link = data["bucket_link"]
 
     def add_message(self, event, data, broadcast: bool):
         self.status_messages.append((event, data))
@@ -357,16 +340,6 @@ class PromptExecutor:
             self.server.client_id = extra_data["client_id"]
         else:
             self.server.client_id = None
-
-        if "data_setup" in extra_data:
-            data_setup = extra_data["data_setup"]
-            if "request_type" in data_setup:
-                request_type = data_setup["request_type"]
-                if request_type == "regularisation":
-                    regularisation_data = data_setup["regularisation_data"]
-                    self.prepare_regularisation_dataset(regularisation_data)
-                elif request_type == "lookbooks":
-                    print("S")
 
         self.status_messages = []
         self.add_message("execution_start", {"prompt_id": prompt_id}, broadcast=False)
