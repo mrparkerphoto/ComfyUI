@@ -1,3 +1,4 @@
+import uuid
 import comfy.options
 comfy.options.enable_args_parsing()
 
@@ -5,6 +6,11 @@ import os
 import importlib.util
 import folder_paths
 import time
+import json
+import pika
+from google.cloud import storage
+from google.oauth2 import service_account
+
 
 def execute_prestartup_script():
     def execute_script(script_path):
@@ -45,7 +51,6 @@ def execute_prestartup_script():
 
 execute_prestartup_script()
 
-
 # Main code
 import asyncio
 import itertools
@@ -57,7 +62,8 @@ from comfy.cli_args import args
 import logging
 
 if os.name == "nt":
-    logging.getLogger("xformers").addFilter(lambda record: 'A matching Triton is not available' not in record.getMessage())
+    logging.getLogger("xformers").addFilter(
+        lambda record: 'A matching Triton is not available' not in record.getMessage())
 
 if __name__ == "__main__":
     if args.cuda_device is not None:
@@ -79,6 +85,7 @@ from server import BinaryEventTypes
 from nodes import init_custom_nodes
 import comfy.model_management
 
+
 def cuda_malloc_warning():
     device = comfy.model_management.get_torch_device()
     device_name = comfy.model_management.get_torch_device_name(device)
@@ -88,7 +95,9 @@ def cuda_malloc_warning():
             if b in device_name:
                 cuda_malloc_warning = True
         if cuda_malloc_warning:
-            logging.warning("\nWARNING: this card most likely does not support cuda-malloc, if you get \"CUDA error\" please run ComfyUI with: --disable-cuda-malloc\n")
+            logging.warning(
+                "\nWARNING: this card most likely does not support cuda-malloc, if you get \"CUDA error\" please run ComfyUI with: --disable-cuda-malloc\n")
+
 
 def prompt_worker(q, server):
     e = execution.PromptExecutor(server)
@@ -96,45 +105,86 @@ def prompt_worker(q, server):
     need_gc = False
     gc_collect_interval = 10.0
 
-    while True:
-        timeout = 1000.0
-        if need_gc:
-            timeout = max(gc_collect_interval - (current_time - last_gc_collect), 0.0)
+    with open("parker-backend-cloud-storage-key.json") as key_file:
+        api_key_string = json.loads(key_file.read())
+    storage_credentials = service_account.Credentials.from_service_account_info(api_key_string)
 
-        queue_item = q.get(timeout=timeout)
-        if queue_item is not None:
-            item, item_id = queue_item
-            execution_start_time = time.perf_counter()
-            prompt_id = item[1]
-            server.last_prompt_id = prompt_id
+    storage_client = storage.Client(
+        args.gcp_project_id, credentials=storage_credentials
+    )
 
-            e.execute(item[2], prompt_id, item[3], item[4])
-            need_gc = True
-            q.task_done(item_id,
-                        e.outputs_ui,
-                        status=execution.PromptQueue.ExecutionStatus(
-                            status_str='success' if e.success else 'error',
-                            completed=e.success,
-                            messages=e.status_messages))
-            if server.client_id is not None:
-                server.send_sync("executing", { "node": None, "prompt_id": prompt_id }, server.client_id)
+    amqp_connection = pika.BlockingConnection(pika.ConnectionParameters('localhost', heartbeat=6000))
+    amqp_receiving_channel = amqp_connection.channel()
+    amqp_receiving_channel.queue_declare(queue='comfy_requests', durable=True)
+    amqp_receiving_channel.basic_qos(prefetch_count=1)
 
-            current_time = time.perf_counter()
-            execution_time = current_time - execution_start_time
-            logging.info("Prompt executed in {:.2f} seconds".format(execution_time))
+    amqp_response_channel = amqp_connection.channel()
+    amqp_response_channel.queue_declare(queue='comfy_responses', durable=True)
 
-        flags = q.get_flags()
-        free_memory = flags.get("free_memory", False)
+    def download_input_image(image_link, img_name):
+        bucket = storage_client.get_bucket(args.gcp_bucket)
+        blob = bucket.blob(image_link)
+        output_dir = folder_paths.get_directory_by_type("input")
+        img_file = os.path.join(output_dir, img_name)
+        blob.download_to_filename(img_file)
 
-        if flags.get("unload_models", free_memory):
-            comfy.model_management.unload_all_models()
-            need_gc = True
-            last_gc_collect = 0
+    def download_lora(lora_link):
+        bucket = storage_client.get_bucket(args.gcp_bucket)
+        blob = bucket.blob(lora_link)
+        filename = lora_link.split("/")[-1]
+        output_dir = folder_paths.get_directory_by_type("loras")
+        img_file = os.path.join(output_dir, filename)
+        blob.download_to_filename(img_file)
 
-        if free_memory:
-            e.reset()
-            need_gc = True
-            last_gc_collect = 0
+    def upload_image(base_link, img_id, img_path):
+        bucket = storage_client.get_bucket(args.gcp_bucket)
+        upload_link = base_link + img_id + ".png"
+        blob = bucket.blob(upload_link)
+        blob.upload_from_filename(img_path)
+        return upload_link
+
+    def consume_amqp_prompt(ch, method, properties, body):
+        json_body = json.loads(body)
+        data_setup = json_body['extra_data']['data_setup']
+
+        if data_setup['request_type'] == "lookbooks":
+            image_link = data_setup['image_link']
+            image_name = data_setup['image_name']
+            download_input_image(image_link, image_name)
+            lora_link = data_setup['lora_link']
+            download_lora(lora_link)
+
+        item = server.run_prompt(json_body)
+        prompt_id = item[1]
+        execution_start_time = time.perf_counter()
+
+        e.execute(item[2], prompt_id, item[3], item[4])
+        nonlocal need_gc
+        need_gc = True
+
+        results = e.outputs_ui
+        current_time = time.perf_counter()
+
+        images = []
+        for node in results:
+            if "images" in results[node]:
+                for image in results[node]["images"]:
+                    if image["type"] == "output":
+                        images.append(image)
+
+        img_links = []
+        for image in images:
+            filename = os.path.basename(image['filename'])
+            output_dir = folder_paths.get_directory_by_type("output")
+            img_file = os.path.join(output_dir, filename)
+            img_id = str(uuid.uuid4())
+            img_link = upload_image(data_setup["base_link"], img_id, img_file)
+            img_links.append(img_link)
+
+        execution_time = current_time - execution_start_time
+        logging.info("Prompt executed in {:.2f} seconds".format(execution_time))
+
+        nonlocal last_gc_collect
 
         if need_gc:
             current_time = time.perf_counter()
@@ -145,8 +195,18 @@ def prompt_worker(q, server):
                 last_gc_collect = current_time
                 need_gc = False
 
-async def run(server, address='', port=8188, verbose=True, call_on_start=None):
-    await asyncio.gather(server.start(address, port, verbose, call_on_start), server.publish_loop())
+        data = {"response_type": data_setup["request_type"],
+                "image_links": img_links}
+        payload = json.dumps(data)
+        amqp_response_channel.basic_publish(exchange='',
+                                            routing_key='comfy_responses',
+                                            body=payload)
+
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    amqp_receiving_channel.basic_consume(queue='comfy_requests', auto_ack=False,
+                                         on_message_callback=consume_amqp_prompt)
+    amqp_receiving_channel.start_consuming()
 
 
 def hijack_progress(server):
@@ -157,6 +217,7 @@ def hijack_progress(server):
         server.send_sync("progress", progress, server.client_id)
         if preview_image is not None:
             server.send_sync(BinaryEventTypes.UNENCODED_PREVIEW_IMAGE, preview_image, server.client_id)
+
     comfy.utils.set_progress_bar_global_hook(hook)
 
 
@@ -197,6 +258,7 @@ if __name__ == "__main__":
     if args.windows_standalone_build:
         try:
             import new_updater
+
             new_updater.update_windows_updater()
         except:
             pass
@@ -218,17 +280,14 @@ if __name__ == "__main__":
 
     cuda_malloc_warning()
 
-    server.add_routes()
-    hijack_progress(server)
-
-    threading.Thread(target=prompt_worker, daemon=True, args=(q, server,)).start()
+    prompt_worker(q, server)
 
     if args.output_directory:
         output_dir = os.path.abspath(args.output_directory)
         logging.info(f"Setting output directory to: {output_dir}")
         folder_paths.set_output_directory(output_dir)
 
-    #These are the default folders that checkpoints, clip and vae models will be saved to when using CheckpointSave, etc.. nodes
+    # These are the default folders that checkpoints, clip and vae models will be saved to when using CheckpointSave, etc.. nodes
     folder_paths.add_model_folder_path("checkpoints", os.path.join(folder_paths.get_output_directory(), "checkpoints"))
     folder_paths.add_model_folder_path("clip", os.path.join(folder_paths.get_output_directory(), "clip"))
     folder_paths.add_model_folder_path("vae", os.path.join(folder_paths.get_output_directory(), "vae"))
@@ -242,17 +301,4 @@ if __name__ == "__main__":
         exit(0)
 
     call_on_start = None
-    if args.auto_launch:
-        def startup_server(address, port):
-            import webbrowser
-            if os.name == 'nt' and address == '0.0.0.0':
-                address = '127.0.0.1'
-            webbrowser.open(f"http://{address}:{port}")
-        call_on_start = startup_server
-
-    try:
-        loop.run_until_complete(run(server, address=args.listen, port=args.port, verbose=not args.dont_print_server, call_on_start=call_on_start))
-    except KeyboardInterrupt:
-        logging.info("\nStopped server")
-
     cleanup_temp()
