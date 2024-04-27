@@ -24,7 +24,6 @@ import mimetypes
 from comfy.cli_args import args
 import comfy.utils
 import comfy.model_management
-import pika
 from app.user_manager import UserManager
 
 class BinaryEventTypes:
@@ -91,11 +90,6 @@ class PromptServer():
 
         self.on_prompt_handlers = []
 
-        self.amqp_connection = pika.BlockingConnection(pika.ConnectionParameters('localhost', heartbeat=6000))
-        self.amqp_receiving_channel = self.amqp_connection.channel()
-        self.amqp_receiving_channel.queue_declare(queue='comfy_requests', durable=True)
-        self.amqp_receiving_channel.basic_qos(prefetch_count=1)
-
         @routes.get('/ws')
         async def websocket_handler(request):
             ws = web.WebSocketResponse()
@@ -115,7 +109,7 @@ class PromptServer():
                 # On reconnect if we are the currently executing client send the current node
                 if self.client_id == sid and self.last_node_id is not None:
                     await self.send("executing", { "node": self.last_node_id }, sid)
-                    
+
                 async for msg in ws:
                     if msg.type == aiohttp.WSMsgType.ERROR:
                         logging.warning('ws connection closed with exception %s' % ws.exception())
@@ -136,9 +130,9 @@ class PromptServer():
         async def get_extensions(request):
             files = glob.glob(os.path.join(
                 glob.escape(self.web_root), 'extensions/**/*.js'), recursive=True)
-            
+
             extensions = list(map(lambda f: "/" + os.path.relpath(f, self.web_root).replace("\\", "/"), files))
-            
+
             for name, dir in nodes.EXTENSION_WEB_DIRS.items():
                 files = glob.glob(os.path.join(glob.escape(dir), '**/*.js'), recursive=True)
                 extensions.extend(list(map(lambda f: "/extensions/" + urllib.parse.quote(
@@ -558,21 +552,13 @@ class PromptServer():
             if valid[0]:
                 prompt_id = str(uuid.uuid4())
                 outputs_to_execute = valid[2]
-                self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute))
-                response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3]}
-                return web.json_response(response)
+                response_item = [number, prompt_id, prompt, extra_data, outputs_to_execute]
+                return response_item
             else:
                 logging.warning("invalid prompt: {}".format(valid[1]))
                 return web.json_response({"error": valid[1], "node_errors": valid[3]}, status=400)
         else:
             return web.json_response({"error": "no prompt", "node_errors": []}, status=400)
-
-    def consume_amqp_prompt(self, ch, method, properties, body):
-        print("ELO")
-        print(body)
-        json_body = json.loads(body)
-        self.run_prompt(json_body)
-        ch.basic_ack(delivery_tag=method.delivery_tag)
 
     def add_routes(self):
         self.user_manager.add_routes(self.routes)
@@ -680,8 +666,6 @@ class PromptServer():
 
         site = web.TCPSite(runner, address, port, ssl_context=ssl_ctx)
         await site.start()
-        self.amqp_receiving_channel.basic_consume(queue='comfy_requests', auto_ack=False, on_message_callback=self.consume_amqp_prompt)
-        self.amqp_receiving_channel.start_consuming()
 
         if verbose:
             logging.info("Starting server\n")
