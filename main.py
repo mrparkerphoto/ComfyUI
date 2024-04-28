@@ -1,5 +1,7 @@
 import uuid
+
 import comfy.options
+
 comfy.options.enable_args_parsing()
 
 import os
@@ -56,7 +58,6 @@ execute_prestartup_script()
 import asyncio
 import itertools
 import shutil
-import threading
 import gc
 
 from comfy.cli_args import args
@@ -106,7 +107,7 @@ def prompt_worker(q, server):
     need_gc = False
     gc_collect_interval = 10.0
 
-    with open("parker-backend-cloud-storage-key.json") as key_file:
+    with open("cloud-storage-key.json") as key_file:
         api_key_string = json.loads(key_file.read())
     storage_credentials = service_account.Credentials.from_service_account_info(api_key_string)
 
