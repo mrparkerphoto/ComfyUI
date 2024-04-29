@@ -50,7 +50,6 @@ parser.add_argument("--cuda-device", type=int, default=None, metavar="DEVICE_ID"
 parser.add_argument("--cloud_storage_key", type=str, help="Cloud storage creds")
 parser.add_argument("--gcp_bucket", type=str, help="GCP bucket")
 parser.add_argument("--gcp_project_id", type=str, help="GCP project id")
-parser.add_argument("--gcp_service_account_key_file", type=str, help="GCP project id")
 parser.add_argument("--rabbitmq_host", type=str, help="Rabbitmq host")
 
 

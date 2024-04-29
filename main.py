@@ -107,7 +107,7 @@ def prompt_worker(q, server):
     need_gc = False
     gc_collect_interval = 10.0
 
-    with open(args.gcp_service_account_key_file) as key_file:
+    with open(args.cloud_storage_key) as key_file:
         api_key_string = json.loads(key_file.read())
     storage_credentials = service_account.Credentials.from_service_account_info(api_key_string)
 
