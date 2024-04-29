@@ -107,7 +107,7 @@ def prompt_worker(q, server):
     need_gc = False
     gc_collect_interval = 10.0
 
-    with open("cloud-storage-key.json") as key_file:
+    with open(args.gcp_service_account_key_file) as key_file:
         api_key_string = json.loads(key_file.read())
     storage_credentials = service_account.Credentials.from_service_account_info(api_key_string)
 
@@ -115,7 +115,7 @@ def prompt_worker(q, server):
         args.gcp_project_id, credentials=storage_credentials
     )
 
-    amqp_connection = pika.BlockingConnection(pika.ConnectionParameters('localhost', heartbeat=6000))
+    amqp_connection = pika.BlockingConnection(pika.ConnectionParameters(args.rabbitmq_host, heartbeat=6000))
     amqp_receiving_channel = amqp_connection.channel()
     amqp_receiving_channel.queue_declare(queue='comfy_requests', durable=True)
     amqp_receiving_channel.basic_qos(prefetch_count=1)
