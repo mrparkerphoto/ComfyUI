@@ -10,8 +10,6 @@ import folder_paths
 import time
 import json
 import pika
-from google.cloud import storage
-from google.oauth2 import service_account
 
 
 def execute_prestartup_script():
@@ -80,12 +78,22 @@ if __name__ == "__main__":
 
 import comfy.utils
 import yaml
-
+from dotenv import load_dotenv
+import boto3
 import execution
 import server
 from server import BinaryEventTypes
 from nodes import init_custom_nodes
 import comfy.model_management
+
+load_dotenv()
+
+AMQP_HOST = os.getenv('AMQP_HOST')
+S3_ACCESS_KEY = os.getenv('S3_ACCESS_KEY')
+S3_SECRET_KEY = os.getenv('S3_SECRET_KEY')
+S3_ENDPOINT = os.getenv('S3_ENDPOINT')
+S3_REGION = os.getenv('S3_REGION')
+S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
 
 
 def cuda_malloc_warning():
@@ -107,15 +115,15 @@ def prompt_worker(q, server):
     need_gc = False
     gc_collect_interval = 10.0
 
-    with open(args.cloud_storage_key) as key_file:
-        api_key_string = json.loads(key_file.read())
-    storage_credentials = service_account.Credentials.from_service_account_info(api_key_string)
-
-    storage_client = storage.Client(
-        args.gcp_project_id, credentials=storage_credentials
+    s3client = boto3.client(
+        's3',
+        aws_access_key_id=S3_ACCESS_KEY,
+        aws_secret_access_key=S3_SECRET_KEY,
+        region_name=S3_REGION,
+        endpoint_url=S3_ENDPOINT,
     )
 
-    amqp_connection = pika.BlockingConnection(pika.ConnectionParameters(args.rabbitmq_host, heartbeat=6000))
+    amqp_connection = pika.BlockingConnection(pika.ConnectionParameters(AMQP_HOST, heartbeat=6000))
     amqp_receiving_channel = amqp_connection.channel()
     amqp_receiving_channel.queue_declare(queue='comfy_requests', durable=True)
     amqp_receiving_channel.basic_qos(prefetch_count=1)
@@ -124,25 +132,22 @@ def prompt_worker(q, server):
     amqp_response_channel.queue_declare(queue='comfy_responses', durable=True)
 
     def download_input_image(image_link, img_name):
-        bucket = storage_client.get_bucket(args.gcp_bucket)
-        blob = bucket.blob(image_link)
         output_dir = folder_paths.get_directory_by_type("input")
         img_file = os.path.join(output_dir, img_name)
-        blob.download_to_filename(img_file)
+        with open(img_file, 'wb') as f:
+            s3client.download_fileobj(S3_BUCKET_NAME, image_link, f)
 
     def download_lora(lora_link):
-        bucket = storage_client.get_bucket(args.gcp_bucket)
-        blob = bucket.blob(lora_link)
         filename = lora_link.split("/")[-1]
         output_dir = folder_paths.get_directory_by_type("loras")
         img_file = os.path.join(output_dir, filename)
-        blob.download_to_filename(img_file)
+        with open(img_file, 'wb') as f:
+            s3client.download_fileobj(S3_BUCKET_NAME, lora_link, f)
 
     def upload_image(base_link, img_id, img_path):
-        bucket = storage_client.get_bucket(args.gcp_bucket)
         upload_link = base_link + img_id + ".png"
-        blob = bucket.blob(upload_link)
-        blob.upload_from_filename(img_path)
+        with open(img_path, "rb") as f:
+            s3client.upload_fileobj(f, S3_BUCKET_NAME, upload_link)
         return upload_link
 
     def consume_amqp_prompt(ch, method, properties, body):
